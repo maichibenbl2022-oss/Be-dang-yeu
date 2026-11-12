@@ -1,0 +1,1576 @@
+-- =====================================================================================
+-- KAS UNIFIED v24.0 - FULL PLAYER SCRIPT
+-- PHẦN 1: KHỞI TẠO, KEY GATE, SPAM LOADING, FPS, DEATH TP, FLY CAM
+-- VIẾT SIÊU CHI TIẾT (ONE PROPERTY PER LINE)
+-- =====================================================================================
+
+-- Chờ game load xong
+repeat
+    task.wait(0.1)
+until game:IsLoaded()
+
+-- Khai báo các Service
+local PlayersService = game:GetService("Players")
+local StarterGuiService = game:GetService("StarterGui")
+local ReplicatedStorageService = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local LightingService = game:GetService("Lighting")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local TextChatService = game:GetService("TextChatService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+-- Lấy thông tin người chơi
+local LocalPlayer = PlayersService.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local CurrentCamera = workspace.CurrentCamera
+
+-- Lấy GuiParent
+local GuiParent = nil
+if gethui then
+    GuiParent = gethui()
+else
+    GuiParent = PlayerGui
+end
+
+-- Khai báo Remote
+local CombatRemote = ReplicatedStorageService:WaitForChild("CombatRemote", 5)
+local CustomResetEvent = ReplicatedStorageService:FindFirstChild("CustomResetEvent")
+local ClientSideHitbox = ReplicatedStorageService:FindFirstChild("ClientSideHitbox")
+local ActionRemote = ReplicatedStorageService:FindFirstChild("ActionRemote")
+
+-- =====================================================================================
+-- HÀM GỬI CHAT
+-- =====================================================================================
+local function SendChatMessage(MessageText)
+    pcall(function()
+        if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+            local TextChannels = TextChatService:FindFirstChild("TextChannels")
+            if TextChannels then
+                local RBXGeneral = TextChannels:FindFirstChild("RBXGeneral")
+                if RBXGeneral then
+                    RBXGeneral:SendAsync(MessageText)
+                end
+            end
+        else
+            local ChatEvents = ReplicatedStorageService:FindFirstChild("DefaultChatSystemChatEvents")
+            if ChatEvents then
+                local SayMessageRequest = ChatEvents:FindFirstChild("SayMessageRequest")
+                if SayMessageRequest then
+                    SayMessageRequest:FireServer(MessageText, "All")
+                end
+            end
+        end
+    end)
+end
+
+-- =====================================================================================
+-- HỆ THỐNG TÍN HIỆU ẨN (ADMIN)
+-- =====================================================================================
+local OBS_SIGNATURE = "HMOBS"
+local ZW_ZERO = "\u{200B}"
+local ZW_ONE = "\u{200C}"
+
+local function EncodeSignal(Command, UserId, Extra)
+    local SignalString = OBS_SIGNATURE .. "|" .. tostring(Command) .. "|" .. tostring(UserId)
+    if Extra then
+        local SanitizedExtra = tostring(Extra):gsub("|", "~")
+        SignalString = SignalString .. "|" .. SanitizedExtra
+    end
+    local OutputTable = {}
+    for Index = 1, #SignalString do
+        local ByteChar = string.byte(SignalString, Index)
+        for BitIndex = 7, 0, -1 do
+            local BitValue = math.floor(ByteChar / 2 ^ BitIndex) % 2
+            if BitValue == 1 then
+                table.insert(OutputTable, ZW_ONE)
+            else
+                table.insert(OutputTable, ZW_ZERO)
+            end
+        end
+    end
+    return table.concat(OutputTable)
+end
+
+local function DecodeSignal(Text)
+    if not Text then return nil end
+    if #Text < 64 then return nil end
+    local BitsTable = {}
+    for Index = 1, #Text do
+        local Char = string.sub(Text, Index, Index)
+        if Char == ZW_ZERO then
+            table.insert(BitsTable, "0")
+        elseif Char == ZW_ONE then
+            table.insert(BitsTable, "1")
+        end
+    end
+    if #BitsTable < 8 then return nil end
+    local OutputString = {}
+    for Index = 1, #BitsTable - 7, 8 do
+        local ByteValue = 0
+        for BitIndex = 0, 7 do
+            local BitString = BitsTable[Index + BitIndex]
+            ByteValue = ByteValue * 2 + tonumber(BitString)
+        end
+        table.insert(OutputString, string.char(ByteValue))
+    end
+    local DecodedString = table.concat(OutputString)
+    if string.sub(DecodedString, 1, #OBS_SIGNATURE) ~= OBS_SIGNATURE then
+        return nil
+    end
+    local SplitParts = string.split(DecodedString, "|")
+    if #SplitParts < 3 then
+        return nil
+    end
+    return SplitParts[2], tonumber(SplitParts[3]), SplitParts[4]
+end
+
+task.spawn(function()
+    task.wait(5)
+    while true do
+        SendChatMessage(EncodeSignal("reg", LocalPlayer.UserId))
+        task.wait(10)
+    end
+end)
+
+-- =====================================================================================
+-- KEY GATE (VIẾT CHI TIẾT TỪNG DÒNG)
+-- =====================================================================================
+local VALID_KEY = "FXS_KASBLUM"
+local IsKeyUnlocked = false
+local IsConfirmed = false
+
+local KeyBlur = Instance.new("BlurEffect")
+KeyBlur.Name = "KeyBlur"
+KeyBlur.Size = 20
+KeyBlur.Parent = LightingService
+
+local KeyGui = Instance.new("ScreenGui")
+KeyGui.Name = "KAS_KeyGate_V24"
+KeyGui.ResetOnSpawn = false
+KeyGui.DisplayOrder = 2147483647
+KeyGui.IgnoreGuiInset = true
+KeyGui.Parent = GuiParent
+
+local KeyFrame = Instance.new("Frame")
+KeyFrame.Name = "KeyFrame"
+KeyFrame.Size = UDim2.fromOffset(360, 220)
+KeyFrame.Position = UDim2.new(0.5, -180, 0.5, -110)
+KeyFrame.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+KeyFrame.BackgroundTransparency = 0.05
+KeyFrame.BorderSizePixel = 0
+KeyFrame.Parent = KeyGui
+
+local KeyFrameCorner = Instance.new("UICorner")
+KeyFrameCorner.CornerRadius = UDim.new(0, 16)
+KeyFrameCorner.Parent = KeyFrame
+
+local KeyStroke = Instance.new("UIStroke")
+KeyStroke.Color = Color3.fromRGB(0, 0, 0)
+KeyStroke.Thickness = 3
+KeyStroke.Parent = KeyFrame
+
+local KeyScale = Instance.new("UIScale")
+KeyScale.Scale = 0.5
+KeyScale.Parent = KeyFrame
+
+local KeyScaleTween = TweenService:Create(KeyScale, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 })
+KeyScaleTween:Play()
+
+local KeyTitle = Instance.new("TextLabel")
+KeyTitle.Size = UDim2.new(1, 0, 0, 42)
+KeyTitle.Position = UDim2.new(0, 0, 0, 14)
+KeyTitle.BackgroundTransparency = 1
+KeyTitle.Font = Enum.Font.GothamBlack
+KeyTitle.Text = "👑 KAS SCRIPT"
+KeyTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+KeyTitle.TextSize = 22
+KeyTitle.Parent = KeyFrame
+
+local KeyInput = Instance.new("TextBox")
+KeyInput.Size = UDim2.new(0.85, 0, 0, 36)
+KeyInput.Position = UDim2.new(0.075, 0, 0, 88)
+KeyInput.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+KeyInput.PlaceholderText = "Nhập key..."
+KeyInput.PlaceholderColor3 = Color3.fromRGB(100, 100, 115)
+KeyInput.Text = ""
+KeyInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+KeyInput.Font = Enum.Font.GothamBold
+KeyInput.TextSize = 13
+KeyInput.ClearTextOnFocus = false
+KeyInput.BorderSizePixel = 0
+KeyInput.Parent = KeyFrame
+
+local KeyInputCorner = Instance.new("UICorner")
+KeyInputCorner.CornerRadius = UDim.new(0, 8)
+KeyInputCorner.Parent = KeyInput
+
+local KeyInputStroke = Instance.new("UIStroke")
+KeyInputStroke.Color = Color3.fromRGB(60, 60, 70)
+KeyInputStroke.Thickness = 1.5
+KeyInputStroke.Parent = KeyInput
+
+local KeyBtn = Instance.new("TextButton")
+KeyBtn.Size = UDim2.new(0.85, 0, 0, 36)
+KeyBtn.Position = UDim2.new(0.075, 0, 0, 138)
+KeyBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+KeyBtn.Font = Enum.Font.GothamBlack
+KeyBtn.Text = "XÁC NHẬN"
+KeyBtn.TextColor3 = Color3.fromRGB(0, 0, 0)
+KeyBtn.TextSize = 13
+KeyBtn.BorderSizePixel = 0
+KeyBtn.Parent = KeyFrame
+
+local KeyBtnCorner = Instance.new("UICorner")
+KeyBtnCorner.CornerRadius = UDim.new(0, 8)
+KeyBtnCorner.Parent = KeyBtn
+
+local KeyStatus = Instance.new("TextLabel")
+KeyStatus.Size = UDim2.new(1, -20, 0, 20)
+KeyStatus.Position = UDim2.new(0, 10, 0, 184)
+KeyStatus.BackgroundTransparency = 1
+KeyStatus.Font = Enum.Font.GothamBold
+KeyStatus.Text = ""
+KeyStatus.TextColor3 = Color3.fromRGB(255, 80, 80)
+KeyStatus.TextSize = 11
+KeyStatus.Parent = KeyFrame
+
+local function ProcessKeyUnlock()
+    local EnteredKey = KeyInput.Text
+    EnteredKey = string.gsub(EnteredKey, "^%s*(.-)%s*$", "%1")
+    
+    if EnteredKey == VALID_KEY then
+        IsKeyUnlocked = true
+        KeyStatus.Text = "✅ ĐÚNG KEY"
+        KeyStatus.TextColor3 = Color3.fromRGB(0, 255, 140)
+        
+        local ScaleDownTween = TweenService:Create(KeyScale, TweenInfo.new(0.3), { Scale = 0.5 })
+        ScaleDownTween:Play()
+        
+        local BlurDownTween = TweenService:Create(KeyBlur, TweenInfo.new(0.3), { Size = 0 })
+        BlurDownTween:Play()
+        
+        task.wait(0.35)
+        KeyGui:Destroy()
+        KeyBlur:Destroy()
+    else
+        KeyStatus.Text = "❌ SAI KEY"
+        KeyStatus.TextColor3 = Color3.fromRGB(255, 80, 80)
+        KeyInputStroke.Color = Color3.fromRGB(255, 0, 0)
+        
+        task.wait(0.3)
+        pcall(function()
+            LocalPlayer:Kick("NHẬP SAI KEY CẦN KEY LIÊN HỆ KAS 💤")
+        end)
+    end
+end
+
+KeyBtn.MouseButton1Click:Connect(ProcessKeyUnlock)
+KeyInput.FocusLost:Connect(function(EnterPressed)
+    if EnterPressed then
+        ProcessKeyUnlock()
+    end
+end)
+
+repeat
+    task.wait(0.1)
+until IsKeyUnlocked == true
+
+-- =====================================================================================
+-- MÀN HÌNH LOADING GIẢ (SPAM KÝ TỰ)
+-- =====================================================================================
+local LoadingGui = Instance.new("ScreenGui")
+LoadingGui.Name = "KAS_Loading_V24"
+LoadingGui.ResetOnSpawn = false
+LoadingGui.DisplayOrder = 2147483646
+LoadingGui.IgnoreGuiInset = true
+LoadingGui.Parent = GuiParent
+
+local LoadingBackground = Instance.new("Frame")
+LoadingBackground.Size = UDim2.new(1, 0, 1, 0)
+LoadingBackground.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+LoadingBackground.BorderSizePixel = 0
+LoadingBackground.Parent = LoadingGui
+
+local LoadingText = Instance.new("TextLabel")
+LoadingText.Size = UDim2.new(1, -40, 1, -150)
+LoadingText.Position = UDim2.new(0, 20, 0, 20)
+LoadingText.BackgroundTransparency = 1
+LoadingText.Text = ""
+LoadingText.TextColor3 = Color3.fromRGB(255, 0, 0)
+LoadingText.Font = Enum.Font.Code
+LoadingText.TextSize = 13
+LoadingText.TextXAlignment = Enum.TextXAlignment.Left
+LoadingText.TextYAlignment = Enum.TextYAlignment.Bottom
+LoadingText.TextWrapped = true
+LoadingText.Parent = LoadingBackground
+
+local LoadingBarBackground = Instance.new("Frame")
+LoadingBarBackground.Size = UDim2.new(0.8, 0, 0, 30)
+LoadingBarBackground.Position = UDim2.new(0.1, 0, 0.85, 0)
+LoadingBarBackground.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+LoadingBarBackground.BorderSizePixel = 0
+LoadingBarBackground.Parent = LoadingBackground
+
+local LoadingBarBgCorner = Instance.new("UICorner")
+LoadingBarBgCorner.CornerRadius = UDim.new(0, 8)
+LoadingBarBgCorner.Parent = LoadingBarBackground
+
+local LoadingBarStroke = Instance.new("UIStroke")
+LoadingBarStroke.Color = Color3.fromRGB(255, 0, 0)
+LoadingBarStroke.Thickness = 2
+LoadingBarStroke.Parent = LoadingBarBackground
+
+local LoadingBarFill = Instance.new("Frame")
+LoadingBarFill.Size = UDim2.new(0, 0, 1, 0)
+LoadingBarFill.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+LoadingBarFill.BorderSizePixel = 0
+LoadingBarFill.Parent = LoadingBarBackground
+
+local LoadingBarFillCorner = Instance.new("UICorner")
+LoadingBarFillCorner.CornerRadius = UDim.new(0, 8)
+LoadingBarFillCorner.Parent = LoadingBarFill
+
+local LoadingPercent = Instance.new("TextLabel")
+LoadingPercent.Size = UDim2.new(1, 0, 0, 30)
+LoadingPercent.Position = UDim2.new(0, 0, 0.85, -35)
+LoadingPercent.BackgroundTransparency = 1
+LoadingPercent.Text = "0%"
+LoadingPercent.TextColor3 = Color3.fromRGB(255, 255, 255)
+LoadingPercent.Font = Enum.Font.GothamBlack
+LoadingPercent.TextSize = 16
+LoadingPercent.Parent = LoadingBackground
+
+local HackerSpamList = {
+    "[KAS_LOGGER] Initializing exploit engine...",
+    "[ROBLOX_API] Hooking RemoteEvent: ReplicatedStorage.CombatRemote.FireServer",
+    "[MEMORY] 0x7FFA12B3 -> 0x7FFA12C8",
+    "[[[[]]))((((ịdoIjdjmPXNE[[>>><]LJ[&0××□♤ỊWNojnxnb>>÷*÷;[₫&\",÷;₫>\">loadkin",
+    "[BYPASS] Injecting Lua bytecode...",
+    "IIIIIIIIIIII10IJSKDJONN[&÷;₫[#&₫,\">\",#[\">@,\",\",",
+    "[NETWORK] Sending spoofed packet...",
+    "nqodhxksbxzon*;@]₫&#?#?₫#cR",
+    "[ANTI-CHEAT] Bypassing Hyperion detection... SUCCESS",
+    "H",
+    "RIe9xmdhcoshckos",
+    "[KAS_CORE] Loading environment variables...",
+    "Dc9hsnfbowhdosnsxnonebfid.s",
+    "Óhdoshc",
+    "[LUA_VM] Executing payload...",
+    "Scohwofhwocd",
+    "[REMOTE] Finding valid network ownership...",
+    "ebIk",
+    "Íncis",
+    "[KAS_LOGGER] Target acquired: LocalPlayer",
+    "Íhjdcijcdji",
+    "Ubwdhci",
+    "[SPOOF] Faking client ticks...",
+    "10%nsdidhxnci",
+    "[HITBOX] Expanding humanoid root part...",
+    "20%obsndhfloadtring;;;;;;][[))*(",
+    "[WEAPON] Modifying tool properties...",
+    "30%jneo((][[[[[[[[jhsoloadtenkm script kass 🤑🤑🤑🤑🤑🤑🤑",
+    "[COMBAT] Overriding attack cooldown...",
+    "[*?#,]",
+    "40%",
+    "[FLY] Noclip and fly enabled...",
+    "50,^^]₫₫₫₫₫₫######%",
+    "[LAG] Removing unnecessary rendering...",
+    "60%",
+    "[FPS] Unlocking framerate...",
+    "70%",
+    "[ADMIN] Connecting to KAS network...",
+    "80%",
+    "[KAS_CORE] Loading UI Components...",
+    "90%",
+    "[KAS_CORE] Finalizing script injection..."
+}
+
+task.spawn(function()
+    for Index, TextLine in ipairs(HackerSpamList) do
+        LoadingText.Text = LoadingText.Text .. "\n" .. TextLine
+        task.wait(0.08)
+    end
+    for Percent = 1, 100 do
+        LoadingBarFill.Size = UDim2.new(Percent / 100, 0, 1, 0)
+        LoadingPercent.Text = Percent .. "%"
+        if Percent % 2 == 0 then
+            local RandomHex = string.format("%X", math.random(100000, 999999))
+            local RandomString = "[" .. RandomHex .. "] &÷;₫[#&₫,\">" .. Percent .. "%"
+            LoadingText.Text = LoadingText.Text .. "\n" .. RandomString
+        end
+        task.wait(0.02)
+    end
+    task.wait(0.5)
+    LoadingText.Visible = false
+    
+    local FinalMessageText = Instance.new("TextLabel")
+    FinalMessageText.Size = UDim2.new(0.9, 0, 0.4, 0)
+    FinalMessageText.Position = UDim2.new(0.05, 0, 0.2, 0)
+    FinalMessageText.BackgroundTransparency = 1
+    FinalMessageText.Text = "script kas dành cho team FXS clan\n\nscript sẽ bị thu hồi nếu chọc giận kas và khi vô team FXS CLAN SẼ ĐƯỢC CUNG CẤP SCRIPT VÔ HẠN SÀI VÔ HẠN XIN CHỦ NHÂN SỬ DỤNG SCRIPT"
+    FinalMessageText.TextColor3 = Color3.fromRGB(255, 255, 255)
+    FinalMessageText.Font = Enum.Font.GothamBold
+    FinalMessageText.TextSize = 16
+    FinalMessageText.TextWrapped = true
+    FinalMessageText.Parent = LoadingBackground
+    
+    local ConfirmButton = Instance.new("TextButton")
+    ConfirmButton.Size = UDim2.fromOffset(200, 40)
+    ConfirmButton.Position = UDim2.new(0.5, -100, 0.7, 0)
+    ConfirmButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    ConfirmButton.Text = "XÁC NHẬN"
+    ConfirmButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+    ConfirmButton.Font = Enum.Font.GothamBlack
+    ConfirmButton.TextSize = 16
+    ConfirmButton.BorderSizePixel = 0
+    ConfirmButton.Parent = LoadingBackground
+    
+    local ConfirmCorner = Instance.new("UICorner")
+    ConfirmCorner.CornerRadius = UDim.new(0, 8)
+    ConfirmCorner.Parent = ConfirmButton
+    
+    ConfirmButton.MouseButton1Click:Connect(function()
+        IsConfirmed = true
+        LoadingGui:Destroy()
+        pcall(function()
+            StarterGuiService:SetCore("SendNotification", {
+                Title = "TEAM FXS CLAN",
+                Text = "Bạn đã kích hoạt script của TEAM FXS CLAN",
+                Duration = 5
+            })
+        end)
+    end)
+end)
+
+repeat
+    task.wait(0.1)
+until IsConfirmed == true
+
+-- =====================================================================================
+-- FPS COUNTER
+-- =====================================================================================
+local FPS_Gui = Instance.new("ScreenGui")
+FPS_Gui.Name = "KAS_FPS_V24"
+FPS_Gui.ResetOnSpawn = false
+FPS_Gui.DisplayOrder = 999998
+FPS_Gui.IgnoreGuiInset = true
+FPS_Gui.Parent = GuiParent
+
+local FPS_Frame = Instance.new("Frame")
+FPS_Frame.Size = UDim2.fromOffset(120, 40)
+FPS_Frame.Position = UDim2.new(0, 20, 0, 20)
+FPS_Frame.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+FPS_Frame.BackgroundTransparency = 0.2
+FPS_Frame.BorderSizePixel = 0
+FPS_Frame.Active = true
+FPS_Frame.Parent = FPS_Gui
+
+local FPS_Corner = Instance.new("UICorner")
+FPS_Corner.CornerRadius = UDim.new(0, 8)
+FPS_Corner.Parent = FPS_Frame
+
+local FPS_Stroke = Instance.new("UIStroke")
+FPS_Stroke.Color = Color3.fromRGB(0, 0, 0)
+FPS_Stroke.Thickness = 2
+FPS_Stroke.Parent = FPS_Frame
+
+local FPS_Label = Instance.new("TextLabel")
+FPS_Label.Size = UDim2.new(1, 0, 1, 0)
+FPS_Label.BackgroundTransparency = 1
+FPS_Label.Text = "FPS: --"
+FPS_Label.TextColor3 = Color3.fromRGB(255, 255, 255)
+FPS_Label.Font = Enum.Font.GothamBlack
+FPS_Label.TextSize = 14
+FPS_Label.Parent = FPS_Frame
+
+local FrameCounter = 0
+local TimerTracker = tick()
+
+RunService.RenderStepped:Connect(function()
+    FrameCounter = FrameCounter + 1
+    if tick() - TimerTracker >= 1 then
+        local CurrentFPS = FrameCounter
+        FPS_Label.Text = "FPS: " .. CurrentFPS
+        if CurrentFPS < 30 then
+            FPS_Label.TextColor3 = Color3.fromRGB(255, 50, 50)
+        elseif CurrentFPS < 50 then
+            FPS_Label.TextColor3 = Color3.fromRGB(255, 200, 50)
+        else
+            FPS_Label.TextColor3 = Color3.fromRGB(0, 255, 100)
+        end
+        FrameCounter = 0
+        TimerTracker = tick()
+    end
+end)
+
+local IsDraggingFPS = false
+local DragStartFPS = nil
+local StartPosFPS = nil
+
+FPS_Frame.InputBegan:Connect(function(Input)
+    if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+        IsDraggingFPS = true
+        DragStartFPS = Input.Position
+        StartPosFPS = FPS_Frame.Position
+        Input.Changed:Connect(function()
+            if Input.UserInputState == Enum.UserInputState.End then
+                IsDraggingFPS = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(Input)
+    if IsDraggingFPS then
+        if Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch then
+            local Delta = Input.Position - DragStartFPS
+            FPS_Frame.Position = UDim2.new(StartPosFPS.X.Scale, StartPosFPS.X.Offset + Delta.X, StartPosFPS.Y.Scale, StartPosFPS.Y.Offset + Delta.Y)
+        end
+    end
+end)
+
+-- =====================================================================================
+-- ADMIN LISTENER & DEATH TP
+-- =====================================================================================
+pcall(function()
+    if not TextChatService then return end
+    local OldCallback = TextChatService.OnIncomingMessage
+    TextChatService.OnIncomingMessage = function(Message)
+        local Text = Message.Text or ""
+        local Command, UserId = DecodeSignal(Text)
+        if Command and UserId then
+            if Command == "kick" and UserId == LocalPlayer.UserId then
+                task.spawn(function()
+                    task.wait(0.1)
+                    pcall(function()
+                        LocalPlayer:Kick("KAS ĐÃ KICK BẠN RA KHỎI SEVER")
+                    end)
+                end)
+            elseif Command == "kill" and UserId ~= LocalPlayer.UserId then
+                task.spawn(function()
+                    local TargetPlayer = PlayersService:GetPlayerByUserId(UserId)
+                    if TargetPlayer and TargetPlayer.Character then
+                        local TargetHum = TargetPlayer.Character:FindFirstChildOfClass("Humanoid")
+                        if TargetHum then
+                            pcall(function()
+                                TargetHum.Health = 0
+                            end)
+                        end
+                    end
+                end)
+            end
+        end
+        return OldCallback and OldCallback(Message) or nil
+    end
+end)
+
+local LastDeathCFrame = nil
+
+local function HandleCharacterDeath(Character)
+    local Humanoid = Character:WaitForChild("Humanoid", 5)
+    local HRP = Character:WaitForChild("HumanoidRootPart", 5)
+    if not Humanoid or not HRP then return end
+    Humanoid.Died:Connect(function()
+        LastDeathCFrame = HRP.CFrame
+    end)
+end
+
+LocalPlayer.CharacterAdded:Connect(function(Character)
+    HandleCharacterDeath(Character)
+    if LastDeathCFrame then
+        task.spawn(function()
+            local HRP = Character:WaitForChild("HumanoidRootPart", 5)
+            if not HRP then return end
+            task.wait(0.3)
+            for _, Part in ipairs(Character:GetDescendants()) do
+                if Part:IsA("BasePart") and Part.SetNetworkOwner then
+                    pcall(function() Part:SetNetworkOwner(LocalPlayer) end)
+                end
+            end
+            for i = 1, 20 do
+                pcall(function()
+                    HRP.CFrame = LastDeathCFrame
+                    HRP.AssemblyLinearVelocity = Vector3.zero
+                    HRP.AssemblyAngularVelocity = Vector3.zero
+                end)
+                task.wait(0.05)
+            end
+            SendChatMessage("[KAS] Đã TP về chỗ chết!")
+            LastDeathCFrame = nil
+        end)
+    end
+end)
+
+if LocalPlayer.Character then
+    HandleCharacterDeath(LocalPlayer.Character)
+end
+
+-- =====================================================================================
+-- FLY CAMERA MEME
+-- =====================================================================================
+local FlyCamSettings = {
+    Enabled = false,
+    TPOnDisable = false,
+    Speed = 50,
+    MemePart = nil
+}
+
+local FlyCamMoveConnection = nil
+local FlyCamMouseConnection = nil
+local FlyCamCFrame = CFrame.new()
+
+local function StartFlyCam()
+    if FlyCamSettings.Enabled then return end
+    FlyCamSettings.Enabled = true
+    CurrentCamera.CameraType = Enum.CameraType.Scriptable
+    pcall(function() UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter end)
+    
+    local Character = LocalPlayer.Character
+    local HRP = Character and Character:FindFirstChild("HumanoidRootPart")
+    if not HRP then return end
+    FlyCamCFrame = HRP.CFrame
+    
+    FlyCamSettings.MemePart = Instance.new("Part")
+    FlyCamSettings.MemePart.Size = Vector3.new(4, 4, 4)
+    FlyCamSettings.MemePart.Anchored = true
+    FlyCamSettings.MemePart.CanCollide = false
+    FlyCamSettings.MemePart.Material = Enum.Material.SmoothPlastic
+    FlyCamSettings.MemePart.CFrame = FlyCamCFrame
+    
+    local BillboardGui = Instance.new("BillboardGui")
+    BillboardGui.Size = UDim2.new(5, 0, 5, 0)
+    BillboardGui.AlwaysOnTop = true
+    BillboardGui.Parent = FlyCamSettings.MemePart
+    
+    local ImageLabel = Instance.new("ImageLabel")
+    ImageLabel.Size = UDim2.new(1, 0, 1, 0)
+    ImageLabel.BackgroundTransparency = 1
+    ImageLabel.Image = "rbxassetid://1076805417"
+    ImageLabel.Parent = BillboardGui
+    
+    FlyCamSettings.MemePart.Parent = workspace
+
+    FlyCamMoveConnection = RunService.RenderStepped:Connect(function(DeltaTime)
+        local MoveForward = 0
+        local MoveSide = 0
+        local MoveUp = 0
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then MoveForward = MoveForward + 1 end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then MoveForward = MoveForward - 1 end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then MoveSide = MoveSide + 1 end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then MoveSide = MoveSide - 1 end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then MoveUp = MoveUp + 1 end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then MoveUp = MoveUp - 1 end
+        
+        local CurrentSpeed = FlyCamSettings.Speed
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then CurrentSpeed = CurrentSpeed * 3 end
+        
+        local MoveVector = (FlyCamCFrame.LookVector * MoveForward) + (FlyCamCFrame.RightVector * MoveSide) + (Vector3.new(0, 1, 0) * MoveUp)
+        if MoveVector.Magnitude > 0 then
+            FlyCamCFrame = FlyCamCFrame + MoveVector.Unit * CurrentSpeed * DeltaTime
+        end
+        
+        if FlyCamSettings.MemePart and FlyCamSettings.MemePart.Parent then
+            FlyCamSettings.MemePart.CFrame = FlyCamCFrame
+            CurrentCamera.CFrame = FlyCamCFrame
+        end
+    end)
+
+    FlyCamMouseConnection = UserInputService.InputChanged:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseMovement then
+            local Sensitivity = 0.003
+            local YawRotation = CFrame.Angles(0, -Input.Delta.X * Sensitivity, 0)
+            local PitchRotation = CFrame.Angles(-Input.Delta.Y * Sensitivity, 0, 0)
+            FlyCamCFrame = FlyCamCFrame * YawRotation * PitchRotation
+        end
+    end)
+end
+
+local function StopFlyCam(ShouldTeleport)
+    if not FlyCamSettings.Enabled then return end
+    local FinalCFrame = FlyCamCFrame
+    FlyCamSettings.Enabled = false
+    if FlyCamMoveConnection then FlyCamMoveConnection:Disconnect() end
+    if FlyCamMouseConnection then FlyCamMouseConnection:Disconnect() end
+    if FlyCamSettings.MemePart then
+        FlyCamSettings.MemePart:Destroy()
+        FlyCamSettings.MemePart = nil
+    end
+    CurrentCamera.CameraType = Enum.CameraType.Custom
+    pcall(function() UserInputService.MouseBehavior = Enum.MouseBehavior.Default end)
+
+    if ShouldTeleport then
+        task.spawn(function()
+            local Character = LocalPlayer.Character
+            local HRP = Character and Character:FindFirstChild("HumanoidRootPart")
+            if not HRP then return end
+            for _, Part in ipairs(Character:GetDescendants()) do
+                if Part:IsA("BasePart") and Part.SetNetworkOwner then
+                    pcall(function() Part:SetNetworkOwner(LocalPlayer) end)
+                end
+            end
+            for i = 1, 20 do
+                pcall(function()
+                    HRP.CFrame = FinalCFrame
+                    HRP.AssemblyLinearVelocity = Vector3.zero
+                end)
+                task.wait(0.05)
+            end
+            SendChatMessage("[KAS] Đã TP đến vị trí cam!")
+        end)
+    end
+end
+
+-- =====================================================================================
+-- HẾT PHẦN 1 - HỆ THỐNG ĐÃ ĐẠT GIỚI HẠN KÝ TỰ
+-- VUI LÒNG COPY TOÀN BỘ ĐOẠN TRÊN VÀ ĐỢI TIN NHẮN TIẾP THEO (PHẦN 2)
+-- =====================================================================================-- =====================================================================================
+-- KAS UNIFIED v24.0 - PHẦN 2: MENU UI, ADD SLIDER, 13 TABS, LOGIC
+-- =====================================================================================
+
+local State = {}
+State.M1Spam = false
+State.ORLock = false
+State.Farm = false
+State.Aim = false
+State.Spam = false
+State.Dash = false
+State.Fly = false
+State.TP = false
+State.ESP = false
+State.Hitbox = false
+State.Aura = false
+State.AntiStun = false
+State.GodMode = true
+State.NoHunger = true
+State.NoClip = false
+State.Nametag = false
+State.Spin = false
+State.AutoBlock = false
+State.Troll = false
+State.MonsterCollect = false
+State.MonsterSummon = false
+State.MonsterOrbit = true
+State.MonsterAttack = true
+State.KASCombatHitbox = false
+State.KASAimBody = false
+State.KASAimAll = false
+State.KASM1Block = false
+State.KASFastCombo = false
+State.KASAntiChan = false
+State.KASHidden = false
+State.KASAutoFly = false
+State.KASAutoJump = false
+State.KASHighJump = false
+State.KASMocRac = false
+State.KASSpin = false
+State.FixLagLighting = false
+State.FixLagEffects = false
+State.FixLagTextures = false
+State.FixLagParticles = false
+State.FixLagShadows = false
+State.FixLagSkybox = false
+State.FixLagClearTerrain = false
+State.FixLagBoostFPS = false
+State.FixLagLowGraphics = false
+State.AutoKillServer = false
+State.AutoKillHitbox = false
+State.AutoReset = false
+State.KASAutoReset = false
+
+local Config = {}
+Config.M1Rate = 0.15
+Config.SpamRate = 0.05
+Config.AttackRange = 50
+Config.ORRange = 9999
+Config.ORNear = 15
+Config.ORMode = "FOLLOW"
+Config.ORRotSpeed = 150
+Config.OrbitAngle = 0
+Config.ORHeight = 2.5
+Config.ORDistance = 3
+Config.ORWalkSpeed = 18
+Config.DashAttackDuration = 1
+Config.DashWaitDuration = 1
+Config.DashHitRate = 0.03
+Config.DashOrbitRadius = 4
+Config.DashOrbitSpeed = 300
+Config.DashGroundOffset = 1
+Config.AntiDetect = true
+Config.FlySpeed = 50
+Config.TPDistance = 3
+Config.HitboxSize = 15
+Config.Target = nil
+Config.TargetName = ""
+Config.FarmRadius = 30
+Config.FarmClicks = 5
+Config.FarmDelay = 3
+Config.FarmPos = nil
+Config.FarmWaiting = false
+Config.FarmRunning = false
+Config.MonsterTargetName = ""
+Config.MonsterTarget = nil
+Config.MonsterMode = "OFF"
+Config.MonsterOrbitRadius = 6
+Config.MonsterOrbitHeight = 2
+Config.MonsterOrbitSpeed = 90
+Config.MonsterAttackCD = 0.4
+Config.MonsterFollowSpeed = 1.2
+Config.MonsterMax = 50
+Config.MonsterTPRadius = 3
+Config.KASHitboxSize = 15
+Config.KASHitboxHeight = 0
+Config.KASOrbitRadius = 0
+Config.KASOrbitSpeed = 8
+Config.KASWalkSpeed = 16
+Config.KASFlySpeed = 40
+Config.KASBaseJumpPower = 50
+Config.KASHighJumpMult = 3
+Config.KASSpinSpeed = 15
+Config.AutoKillSpeed = 60
+Config.AutoKillHeight = 8
+Config.AutoKillDelay = 0.4
+Config.AutoKillRange = 800
+
+local Remotes = {}
+local ManualRemotes = {}
+local Allies = {}
+local ProtectedPlayers = {}
+
+-- =====================================================================================
+-- GIAO DIỆN MENU CHÍNH
+-- =====================================================================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "KAS_MainUI_V24"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.DisplayOrder = 999999
+ScreenGui.Parent = GuiParent
+
+local MainBlur = Instance.new("BlurEffect")
+MainBlur.Size = 0
+MainBlur.Parent = LightingService
+
+local HomeBtn = Instance.new("TextButton")
+HomeBtn.Name = "HomeBtn"
+HomeBtn.Size = UDim2.fromOffset(56, 56)
+HomeBtn.Position = UDim2.new(1, -100, 0, 100)
+HomeBtn.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+HomeBtn.BackgroundTransparency = 0.05
+HomeBtn.Text = "👑"
+HomeBtn.TextSize = 26
+HomeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+HomeBtn.Font = Enum.Font.GothamBold
+HomeBtn.BorderSizePixel = 0
+HomeBtn.AutoButtonColor = false
+HomeBtn.Active = true
+HomeBtn.Parent = ScreenGui
+
+local HomeCorner = Instance.new("UICorner")
+HomeCorner.CornerRadius = UDim.new(1, 0)
+HomeCorner.Parent = HomeBtn
+
+local HomeStroke = Instance.new("UIStroke")
+HomeStroke.Color = Color3.fromRGB(0, 0, 0)
+HomeStroke.Thickness = 3
+HomeStroke.Parent = HomeBtn
+
+local Main = Instance.new("Frame")
+Main.Name = "MainFrame"
+Main.Size = UDim2.fromOffset(460, 420)
+Main.Position = UDim2.new(0.5, -230, 0.5, -210)
+Main.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+Main.BackgroundTransparency = 0.03
+Main.BorderSizePixel = 0
+Main.Visible = false
+Main.Active = true
+Main.ClipsDescendants = true
+Main.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 16)
+MainCorner.Parent = Main
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(0, 0, 0)
+MainStroke.Thickness = 3
+MainStroke.Parent = Main
+
+local MainScale = Instance.new("UIScale")
+MainScale.Parent = Main
+
+local Sidebar = Instance.new("Frame")
+Sidebar.Name = "Sidebar"
+Sidebar.Size = UDim2.new(0, 130, 1, 0)
+Sidebar.BackgroundColor3 = Color3.fromRGB(4, 4, 6)
+Sidebar.BackgroundTransparency = 0.1
+Sidebar.BorderSizePixel = 0
+Sidebar.Parent = Main
+
+local SidebarCorner = Instance.new("UICorner")
+SidebarCorner.CornerRadius = UDim.new(0, 16)
+SidebarCorner.Parent = Sidebar
+
+local Logo = Instance.new("TextLabel")
+Logo.Name = "Logo"
+Logo.Size = UDim2.new(1, -8, 0, 36)
+Logo.Position = UDim2.new(0, 4, 0, 8)
+Logo.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+Logo.Text = "👑 KAS SCRIPT"
+Logo.TextColor3 = Color3.fromRGB(255, 255, 255)
+Logo.TextSize = 10
+Logo.Font = Enum.Font.GothamBlack
+Logo.Parent = Sidebar
+
+local LogoCorner = Instance.new("UICorner")
+LogoCorner.CornerRadius = UDim.new(0, 8)
+LogoCorner.Parent = Logo
+
+local TabHolder = Instance.new("ScrollingFrame")
+TabHolder.Name = "TabHolder"
+TabHolder.Size = UDim2.new(1, -8, 1, -54)
+TabHolder.Position = UDim2.new(0, 4, 0, 48)
+TabHolder.BackgroundTransparency = 1
+TabHolder.BorderSizePixel = 0
+TabHolder.ScrollBarThickness = 0
+TabHolder.CanvasSize = UDim2.new(0, 0, 0, 0)
+TabHolder.AutomaticCanvasSize = Enum.AutomaticSize.Y
+TabHolder.ScrollingDirection = Enum.ScrollingDirection.Y
+TabHolder.Parent = Sidebar
+
+local TabLayout = Instance.new("UIListLayout")
+TabLayout.Padding = UDim.new(0, 2)
+TabLayout.Parent = TabHolder
+
+local Content = Instance.new("ScrollingFrame")
+Content.Name = "Content"
+Content.Size = UDim2.new(1, -136, 1, -8)
+Content.Position = UDim2.new(0, 132, 0, 4)
+Content.BackgroundTransparency = 1
+Content.BorderSizePixel = 0
+Content.ScrollBarThickness = 3
+Content.ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255)
+Content.CanvasSize = UDim2.new(0, 0, 0, 2500)
+Content.ScrollingDirection = Enum.ScrollingDirection.Y
+Content.Parent = Main
+
+local function OpenMenu()
+    if Main.Visible then return end
+    Main.Visible = true
+    MainScale.Scale = 0.7
+    Main.Position = UDim2.new(0.5, -230, 0.6, -210)
+    TweenService:Create(Main, TweenInfo.new(0.45, Enum.EasingStyle.Back), { Position = UDim2.new(0.5, -230, 0.5, -210) }):Play()
+    TweenService:Create(MainScale, TweenInfo.new(0.45, Enum.EasingStyle.Back), { Scale = 1 }):Play()
+    TweenService:Create(MainBlur, TweenInfo.new(0.3), { Size = 12 }):Play()
+    HomeBtn.Text = "✖"
+end
+
+local function CloseMenu()
+    if not Main.Visible then return end
+    TweenService:Create(MainScale, TweenInfo.new(0.25), { Scale = 0.7 }):Play()
+    TweenService:Create(MainBlur, TweenInfo.new(0.25), { Size = 0 }):Play()
+    task.wait(0.25)
+    Main.Visible = false
+    HomeBtn.Text = "👑"
+end
+
+local IsDraggingHome = false
+local DragStartHome = nil
+local StartPosHome = nil
+
+HomeBtn.InputBegan:Connect(function(Input)
+    if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+        IsDraggingHome = true
+        DragStartHome = Input.Position
+        StartPosHome = HomeBtn.Position
+        Input.Changed:Connect(function()
+            if Input.UserInputState == Enum.UserInputState.End then
+                IsDraggingHome = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(Input)
+    if IsDraggingHome then
+        if Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch then
+            local Delta = Input.Position - DragStartHome
+            HomeBtn.Position = UDim2.new(StartPosHome.X.Scale, StartPosHome.X.Offset + Delta.X, StartPosHome.Y.Scale, StartPosHome.Y.Offset + Delta.Y)
+        end
+    end
+end)
+
+HomeBtn.MouseButton1Click:Connect(function()
+    if Main.Visible then CloseMenu() else OpenMenu() end
+end)
+
+UserInputService.InputBegan:Connect(function(Input, GameProcessed)
+    if not GameProcessed and Input.KeyCode == Enum.KeyCode.RightShift then
+        if Main.Visible then CloseMenu() else OpenMenu() end
+    end
+end)
+
+-- =====================================================================================
+-- TẠO TABS
+-- =====================================================================================
+local Pages = {}
+local TabBtns = {}
+local CurrentPage = 0
+
+local function MakePage()
+    local Page = Instance.new("Frame")
+    Page.Size = UDim2.new(1, -8, 0, 2400)
+    Page.BackgroundTransparency = 1
+    Page.Visible = false
+    Page.Parent = Content
+    return Page
+end
+
+local function CreateTab(Icon, Label, PageIndex)
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(1, -4, 0, 22)
+    Button.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+    Button.BackgroundTransparency = 0.4
+    Button.Text = ""
+    Button.BorderSizePixel = 0
+    Button.AutoButtonColor = false
+    Button.Parent = TabHolder
+    
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 6)
+    Corner.Parent = Button
+    
+    local Indicator = Instance.new("Frame")
+    Indicator.Size = UDim2.new(0, 3, 0.7, 0)
+    Indicator.Position = UDim2.new(0, 0, 0.15, 0)
+    Indicator.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    Indicator.BorderSizePixel = 0
+    Indicator.Visible = false
+    Indicator.Parent = Button
+    
+    local IndCorner = Instance.new("UICorner")
+    IndCorner.CornerRadius = UDim.new(0, 2)
+    IndCorner.Parent = Indicator
+    
+    local IconLabel = Instance.new("TextLabel")
+    IconLabel.Size = UDim2.new(0, 16, 1, 0)
+    IconLabel.Position = UDim2.new(0, 6, 0, 0)
+    IconLabel.BackgroundTransparency = 1
+    IconLabel.Text = Icon
+    IconLabel.TextSize = 11
+    IconLabel.Font = Enum.Font.GothamBold
+    IconLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+    IconLabel.Parent = Button
+    
+    local TextLabel = Instance.new("TextLabel")
+    TextLabel.Size = UDim2.new(1, -26, 1, 0)
+    TextLabel.Position = UDim2.new(0, 24, 0, 0)
+    TextLabel.BackgroundTransparency = 1
+    TextLabel.Text = Label
+    TextLabel.TextSize = 8
+    TextLabel.Font = Enum.Font.GothamBold
+    TextLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+    TextLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TextLabel.Parent = Button
+    
+    Button.MouseButton1Click:Connect(function()
+        for _, OtherBtn in pairs(TabBtns) do
+            local InnerInd = OtherBtn:FindFirstChildOfClass("Frame")
+            local InnerIcon = OtherBtn:FindFirstChildOfClass("TextLabel")
+            local InnerText = OtherBtn:GetChildren()[3]
+            if InnerInd then InnerInd.Visible = false end
+            if InnerIcon then InnerIcon.TextColor3 = Color3.fromRGB(150, 150, 160) end
+            if InnerText and InnerText:IsA("TextLabel") then InnerText.TextColor3 = Color3.fromRGB(150, 150, 160) end
+            TweenService:Create(OtherBtn, TweenInfo.new(0.15), {BackgroundTransparency = 0.4}):Play()
+        end
+        Indicator.Visible = true
+        IconLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        TweenService:Create(Button, TweenInfo.new(0.15), {BackgroundTransparency = 0.05}):Play()
+        for i, Page in ipairs(Pages) do
+            Page.Visible = (i == PageIndex)
+        end
+        CurrentPage = PageIndex
+        Content.CanvasPosition = Vector2.new(0, 0)
+    end)
+    TabBtns[PageIndex] = Button
+end
+
+CreateTab("⚡", "M1 SPAM", 1)
+CreateTab("🌀", "OR XOAY", 2)
+CreateTab("💰", "FARM", 3)
+CreateTab("⚔", "TẤN CÔNG", 4)
+CreateTab("🏃", "DI CHUYỂN", 5)
+CreateTab("👁", "HIỂN THỊ", 6)
+CreateTab("✨", "AURA", 7)
+CreateTab("🎁", "TIỆN ÍCH", 8)
+CreateTab("👹", "QUÁI", 9)
+CreateTab("🥷", "KAS COMBAT", 10)
+CreateTab("🚀", "FIXLAG", 11)
+CreateTab("🌐", "SERVER", 12)
+CreateTab("⚙", "CÀI ĐẶT", 13)
+
+Pages[1] = MakePage()
+Pages[2] = MakePage()
+Pages[3] = MakePage()
+Pages[4] = MakePage()
+Pages[5] = MakePage()
+Pages[6] = MakePage()
+Pages[7] = MakePage()
+Pages[8] = MakePage()
+Pages[9] = MakePage()
+Pages[10] = MakePage()
+Pages[11] = MakePage()
+Pages[12] = MakePage()
+Pages[13] = MakePage()
+
+if TabBtns[1] then
+    local Ind = TabBtns[1]:FindFirstChildOfClass("Frame")
+    Ind.Visible = true
+    local Ic = TabBtns[1]:FindFirstChildOfClass("TextLabel")
+    Ic.TextColor3 = Color3.fromRGB(255, 255, 255)
+    local Tx = TabBtns[1]:GetChildren()[3]
+    if Tx then Tx.TextColor3 = Color3.fromRGB(255, 255, 255) end
+    Pages[1].Visible = true
+    CurrentPage = 1
+end
+
+-- =====================================================================================
+-- HÀM TẠO UI CƠ BẢN (ADD SLIDER QUAN TRỌNG)
+-- =====================================================================================
+local function AddTitle(Text, Parent, YPos)
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(1, -8, 0, 22)
+    TitleLabel.Position = UDim2.new(0, 4, 0, YPos)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = Text
+    TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TitleLabel.TextSize = 11
+    TitleLabel.Font = Enum.Font.GothamBlack
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.Parent = Parent
+end
+
+local function AddToggle(Label, GetState, SetState, Parent, YPos)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(1, -8, 0, 30)
+    Frame.Position = UDim2.new(0, 4, 0, YPos)
+    Frame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+    Frame.BackgroundTransparency = 0.1
+    Frame.BorderSizePixel = 0
+    Frame.Parent = Parent
+    
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 8)
+    Corner.Parent = Frame
+    
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Color3.fromRGB(0, 0, 0)
+    Stroke.Thickness = 1.5
+    Stroke.Parent = Frame
+    
+    local TextLabel = Instance.new("TextLabel")
+    TextLabel.Size = UDim2.new(1, -56, 1, 0)
+    TextLabel.Position = UDim2.new(0, 10, 0, 0)
+    TextLabel.BackgroundTransparency = 1
+    TextLabel.Text = Label
+    TextLabel.TextColor3 = Color3.fromRGB(220, 220, 225)
+    TextLabel.TextSize = 9
+    TextLabel.Font = Enum.Font.GothamBold
+    TextLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TextLabel.Parent = Frame
+    
+    local Track = Instance.new("Frame")
+    Track.Size = UDim2.fromOffset(36, 18)
+    Track.Position = UDim2.new(1, -44, 0.5, -9)
+    Track.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+    Track.BorderSizePixel = 0
+    Track.Parent = Frame
+    
+    local TrackCorner = Instance.new("UICorner")
+    TrackCorner.CornerRadius = UDim.new(1, 0)
+    TrackCorner.Parent = Track
+    
+    local Knob = Instance.new("Frame")
+    Knob.Size = UDim2.fromOffset(14, 14)
+    Knob.Position = UDim2.new(0, 2, 0.5, -7)
+    Knob.BackgroundColor3 = Color3.fromRGB(180, 180, 185)
+    Knob.BorderSizePixel = 0
+    Knob.Parent = Track
+    
+    local KnobCorner = Instance.new("UICorner")
+    KnobCorner.CornerRadius = UDim.new(1, 0)
+    KnobCorner.Parent = Knob
+    
+    local function Animate(State)
+        if State then
+            TweenService:Create(Track, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+            TweenService:Create(Knob, TweenInfo.new(0.25, Enum.EasingStyle.Back), {
+                Position = UDim2.new(1, -16, 0.5, -7),
+                BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+            }):Play()
+        else
+            TweenService:Create(Track, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(35, 35, 42)}):Play()
+            TweenService:Create(Knob, TweenInfo.new(0.25, Enum.EasingStyle.Back), {
+                Position = UDim2.new(0, 2, 0.5, -7),
+                BackgroundColor3 = Color3.fromRGB(180, 180, 185)
+            }):Play()
+        end
+    end
+    
+    Frame.InputBegan:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+            local NewState = not GetState()
+            SetState(NewState)
+            Animate(NewState)
+        end
+    end)
+    Animate(GetState())
+end
+
+local function AddSlider(Name, Value, MinVal, MaxVal, Callback, Parent, YPos, IsFloat)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(1, -8, 0, 38)
+    Frame.Position = UDim2.new(0, 4, 0, YPos)
+    Frame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+    Frame.BackgroundTransparency = 0.1
+    Frame.BorderSizePixel = 0
+    Frame.Parent = Parent
+    
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 8)
+    Corner.Parent = Frame
+    
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Color3.fromRGB(0, 0, 0)
+    Stroke.Thickness = 1.5
+    Stroke.Parent = Frame
+    
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, -60, 0, 13)
+    Label.Position = UDim2.new(0, 10, 0, 2)
+    Label.BackgroundTransparency = 1
+    Label.TextColor3 = Color3.fromRGB(220, 220, 225)
+    Label.TextSize = 9
+    Label.Font = Enum.Font.GothamBold
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Frame
+    
+    local function FormatValue(v)
+        if IsFloat then return string.format("%.2f", v) else return tostring(math.floor(v)) end
+    end
+    Label.Text = Name .. ": " .. FormatValue(Value)
+    
+    local Track = Instance.new("Frame")
+    Track.Size = UDim2.new(1, -60, 0, 4)
+    Track.Position = UDim2.new(0, 10, 0, 24)
+    Track.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+    Track.BorderSizePixel = 0
+    Track.Parent = Frame
+    
+    local TrackCorner = Instance.new("UICorner")
+    TrackCorner.CornerRadius = UDim.new(1, 0)
+    TrackCorner.Parent = Track
+    
+    local Fill = Instance.new("Frame")
+    Fill.Size = UDim2.new((Value - MinVal) / (MaxVal - MinVal), 0, 1, 0)
+    Fill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    Fill.BorderSizePixel = 0
+    Fill.Parent = Track
+    
+    local FillCorner = Instance.new("UICorner")
+    FillCorner.CornerRadius = UDim.new(1, 0)
+    FillCorner.Parent = Fill
+    
+    local Knob = Instance.new("Frame")
+    Knob.Size = UDim2.fromOffset(12, 12)
+    Knob.Position = UDim2.new((Value - MinVal) / (MaxVal - MinVal), -6, 0.5, -6)
+    Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    Knob.BorderSizePixel = 0
+    Knob.Parent = Track
+    
+    local KnobCorner = Instance.new("UICorner")
+    KnobCorner.CornerRadius = UDim.new(1, 0)
+    KnobCorner.Parent = Knob
+    
+    local function SetValue(v, Animate)
+        v = math.clamp(v, MinVal, MaxVal)
+        if not IsFloat then v = math.floor(v) end
+        Value = v
+        local Pct = (v - MinVal) / (MaxVal - MinVal)
+        Label.Text = Name .. ": " .. FormatValue(v)
+        if Animate then
+            TweenService:Create(Fill, TweenInfo.new(0.1), {Size = UDim2.new(Pct, 0, 1, 0)}):Play()
+            TweenService:Create(Knob, TweenInfo.new(0.1), {Position = UDim2.new(Pct, -6, 0.5, -6)}):Play()
+        else
+            Fill.Size = UDim2.new(Pct, 0, 1, 0)
+            Knob.Position = UDim2.new(Pct, -6, 0.5, -6)
+        end
+        pcall(Callback, v)
+    end
+    
+    local MinusBtn = Instance.new("TextButton")
+    MinusBtn.Size = UDim2.fromOffset(18, 18)
+    MinusBtn.Position = UDim2.new(1, -44, 0.5, -9)
+    MinusBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    MinusBtn.Text = "-"
+    MinusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    MinusBtn.TextSize = 12
+    MinusBtn.Font = Enum.Font.GothamBold
+    MinusBtn.BorderSizePixel = 0
+    MinusBtn.Parent = Frame
+    local MinusCorner = Instance.new("UICorner")
+    MinusCorner.CornerRadius = UDim.new(0, 4)
+    MinusCorner.Parent = MinusBtn
+    MinusBtn.MouseButton1Click:Connect(function() SetValue(Value - (IsFloat and 0.1 or 1), true) end)
+    
+    local PlusBtn = Instance.new("TextButton")
+    PlusBtn.Size = UDim2.fromOffset(18, 18)
+    PlusBtn.Position = UDim2.new(1, -22, 0.5, -9)
+    PlusBtn.BackgroundColor3 = Color3.fromRGB(50, 200, 80)
+    PlusBtn.Text = "+"
+    PlusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    PlusBtn.TextSize = 12
+    PlusBtn.Font = Enum.Font.GothamBold
+    PlusBtn.BorderSizePixel = 0
+    PlusBtn.Parent = Frame
+    local PlusCorner = Instance.new("UICorner")
+    PlusCorner.CornerRadius = UDim.new(0, 4)
+    PlusCorner.Parent = PlusBtn
+    PlusBtn.MouseButton1Click:Connect(function() SetValue(Value + (IsFloat and 0.1 or 1), true) end)
+    
+    local IsDragging = false
+    Track.InputBegan:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+            IsDragging = true
+            local RelX = Input.Position.X - Track.AbsolutePosition.X
+            SetValue(MinVal + math.clamp(RelX / Track.AbsoluteSize.X, 0, 1) * (MaxVal - MinVal), false)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(Input)
+        if IsDragging and (Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch) then
+            local RelX = Input.Position.X - Track.AbsolutePosition.X
+            SetValue(MinVal + math.clamp(RelX / Track.AbsoluteSize.X, 0, 1) * (MaxVal - MinVal), false)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+            IsDragging = false
+        end
+    end)
+end
+
+local function AddButton(Label, Callback, Parent, YPos, Color)
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(1, -8, 0, 28)
+    Button.Position = UDim2.new(0, 4, 0, YPos)
+    Button.Text = Label
+    Button.TextColor3 = Color or Color3.fromRGB(220, 220, 225)
+    Button.TextSize = 9
+    Button.Font = Enum.Font.GothamBold
+    Button.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+    Button.BackgroundTransparency = 0.1
+    Button.BorderSizePixel = 0
+    Button.Parent = Parent
+    
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 8)
+    Corner.Parent = Button
+    
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Color3.fromRGB(0, 0, 0)
+    Stroke.Thickness = 1.5
+    Stroke.Parent = Button
+    
+    Button.MouseButton1Click:Connect(function()
+        pcall(Callback)
+    end)
+end
+
+-- =====================================================================================
+-- ĐỔ DỮ LIỆU VÀO CÁC TAB (FULL SLIDER & TOGGLE)
+-- =====================================================================================
+AddTitle("⚡ M1 SPAM", Pages[1], 6)
+AddToggle("M1 SPAM", function() return State.M1Spam end, function(v) State.M1Spam = v end, Pages[1], 30)
+AddSlider("DELAY", Config.M1Rate, 0.05, 2, function(v) Config.M1Rate = v end, Pages[1], 64, true)
+AddSlider("RANGE", Config.AttackRange, 5, 200, function(v) Config.AttackRange = v end, Pages[1], 104)
+
+AddTitle("🌀 OR XOAY", Pages[2], 6)
+AddToggle("OR XOAY PRO", function() return State.ORLock end, function(v) State.ORLock = v end, Pages[2], 30)
+AddTitle("CHẾ ĐỘ XOAY", Pages[2], 70)
+local mr1 = Instance.new("Frame", Pages[2]) mr1.Size = UDim2.new(1, -8, 0, 22) mr1.Position = UDim2.new(0, 4, 0, 94) mr1.BackgroundTransparency = 1
+local mr2 = Instance.new("Frame", Pages[2]) mr2.Size = UDim2.new(1, -8, 0, 22) mr2.Position = UDim2.new(0, 4, 0, 118) mr2.BackgroundTransparency = 1
+local mr3 = Instance.new("Frame", Pages[2]) mr3.Size = UDim2.new(1, -8, 0, 22) mr3.Position = UDim2.new(0, 4, 0, 142) mr3.BackgroundTransparency = 1
+local mr4 = Instance.new("Frame", Pages[2]) mr4.Size = UDim2.new(1, -8, 0, 22) mr4.Position = UDim2.new(0, 4, 0, 166) mr4.BackgroundTransparency = 1
+
+local function AddModeBtn(label, mode, parent, x)
+    local b = Instance.new("TextButton", parent)
+    b.Size = UDim2.new(0.48, 0, 1, 0) b.Position = UDim2.new(x, 0, 0, 0) b.Text = label
+    b.TextColor3 = Color3.fromRGB(200, 200, 205) b.TextSize = 8 b.Font = Enum.Font.GothamBold
+    b.BackgroundColor3 = Color3.fromRGB(15, 15, 20) b.BackgroundTransparency = 0.2 b.BorderSizePixel = 0
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+    b.MouseButton1Click:Connect(function() Config.ORMode = mode end)
+end
+AddModeBtn("FOLLOW", "FOLLOW", mr1, 0) AddModeBtn("STICK", "STICK", mr1, 0.52)
+AddModeBtn("BEHIND", "BEHIND", mr2, 0) AddModeBtn("ORBIT", "ORBIT", mr2, 0.52)
+AddModeBtn("DELAY", "DELAY", mr3, 0) AddModeBtn("SLIDE", "SLIDE", mr3, 0.52)
+AddModeBtn("DASH", "DASH", mr4, 0) AddModeBtn("EZY", "EZY", mr4, 0.52)
+
+AddTitle("⚙ CÀI ĐẶT OR", Pages[2], 198)
+AddSlider("OR NEAR", Config.ORNear, 3, 80, function(v) Config.ORNear = v end, Pages[2], 222)
+AddSlider("OR DIST", Config.ORDistance, 1, 20, function(v) Config.ORDistance = v end, Pages[2], 262)
+AddSlider("OR HEIGHT", Config.ORHeight, -5, 20, function(v) Config.ORHeight = v end, Pages[2], 302)
+AddSlider("TỐC ĐỘ XOAY", Config.ORRotSpeed, 1, 300, function(v) Config.ORRotSpeed = v end, Pages[2], 342)
+AddSlider("WALK SPEED", Config.ORWalkSpeed, 5, 100, function(v) Config.ORWalkSpeed = v end, Pages[2], 382)
+
+AddTitle("💰 FARM", Pages[3], 6)
+AddToggle("FARM TỰ ĐỘNG", function() return State.Farm end, function(v) State.Farm = v end, Pages[3], 30)
+AddButton("📍 LƯU VỊ TRÍ FARM", function() end, Pages[3], 64, Color3.fromRGB(255, 255, 255))
+AddSlider("BÁN KÍNH QUÉT", Config.FarmRadius, 5, 100, function(v) Config.FarmRadius = v end, Pages[3], 100)
+AddSlider("SỐ CLICK", Config.FarmClicks, 1, 20, function(v) Config.FarmClicks = v end, Pages[3], 140)
+AddSlider("CHỜ RESET", Config.FarmDelay, 1, 30, function(v) Config.FarmDelay = v end, Pages[3], 180, true)
+
+AddTitle("⚔ TẤN CÔNG", Pages[4], 6)
+AddToggle("SPAM ĐÁNH", function() return State.Spam end, function(v) State.Spam = v end, Pages[4], 30)
+AddToggle("AIMBOT", function() return State.Aim end, function(v) State.Aim = v end, Pages[4], 62)
+AddToggle("ANTI STUN", function() return State.AntiStun end, function(v) State.AntiStun = v end, Pages[4], 94)
+AddSlider("SPAM RATE", Config.SpamRate, 0.02, 0.5, function(v) Config.SpamRate = v end, Pages[4], 128, true)
+AddTitle("🔄 TỰ ĐỘNG RESET", Pages[4], 170)
+AddToggle("AUTO RESET", function() return State.AutoReset end, function(v) State.AutoReset = v end, Pages[4], 194)
+AddTitle("🕳️ VOID CORE", Pages[4], 236)
+AddToggle("AUTO BLOCK", function() return State.AutoBlock end, function(v) State.AutoBlock = v end, Pages[4], 260)
+
+AddTitle("🏃 DI CHUYỂN", Pages[5], 6)
+AddToggle("DASH NHANH", function() return State.Dash end, function(v) State.Dash = v end, Pages[5], 30)
+AddToggle("BAY (FLY)", function() return State.Fly end, function(v) State.Fly = v end, Pages[5], 62)
+AddToggle("TP LÙNG", function() return State.TP end, function(v) State.TP = v end, Pages[5], 94)
+AddToggle("NOCLIP", function() return State.NoClip end, function(v) State.NoClip = v end, Pages[5], 126)
+AddSlider("FLY SPEED", Config.FlySpeed, 1, 300, function(v) Config.FlySpeed = v end, Pages[5], 160)
+AddSlider("TP DIST", Config.TPDistance, 1, 50, function(v) Config.TPDistance = v end, Pages[5], 200)
+AddTitle("🎥 FLY CAMERA MEME", Pages[5], 244)
+AddToggle("BẬT FLY CAM", function() return FlyCamSettings.Enabled end, function(v) if v then StartFlyCam() else StopFlyCam(FlyCamSettings.TPOnDisable) end end, Pages[5], 268)
+AddToggle("TP KHI TẮT FLY CAM", function() return FlyCamSettings.TPOnDisable end, function(v) FlyCamSettings.TPOnDisable = v end, Pages[5], 300)
+AddSlider("CAM SPEED", FlyCamSettings.Speed, 5, 500, function(v) FlyCamSettings.Speed = v end, Pages[5], 334)
+
+AddTitle("👁 HIỂN THỊ", Pages[6], 6)
+AddToggle("ESP", function() return State.ESP end, function(v) State.ESP = v end, Pages[6], 30)
+AddToggle("HITBOX TO", function() return State.Hitbox end, function(v) State.Hitbox = v end, Pages[6], 62)
+AddSlider("HITBOX SIZE", Config.HitboxSize, 5, 200, function(v) Config.HitboxSize = v end, Pages[6], 96)
+AddToggle("NAMETAG", function() return State.Nametag end, function(v) State.Nametag = v end, Pages[6], 136)
+
+AddTitle("✨ AURA", Pages[7], 6)
+AddToggle("AURA ĐỎ", function() return State.Aura end, function(v) State.Aura = v end, Pages[7], 30)
+
+AddTitle("🎁 TIỆN ÍCH", Pages[8], 6)
+AddToggle("SPIN", function() return State.Spin end, function(v) State.Spin = v end, Pages[8], 30)
+AddToggle("KAS SPIN", function() return State.KASSpin end, function(v) State.KASSpin = v end, Pages[8], 62)
+AddToggle("TROLL CON CU", function() return State.Troll end, function(v) State.Troll = v end, Pages[8], 94)
+
+AddTitle("👹 QUÁI", Pages[9], 6)
+AddToggle("TP QUÁI VỀ MÌNH", function() return State.MonsterCollect end, function(v) State.MonsterCollect = v end, Pages[9], 30)
+AddToggle("TỰ ĐỘNG ĐÁNH", function() return State.MonsterAttack end, function(v) State.MonsterAttack = v end, Pages[9], 62)
+AddSlider("TP BÁN KÍNH", Config.MonsterTPRadius, 1, 15, function(v) Config.MonsterTPRadius = v end, Pages[9], 96, true)
+AddSlider("ORBIT BÁN KÍNH", Config.MonsterOrbitRadius, 2, 30, function(v) Config.MonsterOrbitRadius = v end, Pages[9], 136)
+AddSlider("ATTACK CD", Config.MonsterAttackCD, 0.1, 3, function(v) Config.MonsterAttackCD = v end, Pages[9], 176, true)
+AddSlider("MAX QUÁI", Config.MonsterMax, 5, 200, function(v) Config.MonsterMax = v end, Pages[9], 216)
+
+AddTitle("🥷 KAS COMBAT", Pages[10], 6)
+AddToggle("HITBOX ORBIT AUTO-KILL", function() return State.KASCombatHitbox end, function(v) State.KASCombatHitbox = v end, Pages[10], 30)
+AddToggle("M1 + BLOCK", function() return State.KASM1Block end, function(v) State.KASM1Block = v end, Pages[10], 62)
+AddToggle("M1 + M2 + BLOCK", function() return State.KASFastCombo end, function(v) State.KASFastCombo = v end, Pages[10], 94)
+AddToggle("ANTI CHẶN", function() return State.KASAntiChan end, function(v) State.KASAntiChan = v end, Pages[10], 126)
+AddTitle("⚙ CÀI ĐẶT KAS", Pages[10], 168)
+AddSlider("HITBOX SIZE", Config.KASHitboxSize, 2, 50, function(v) Config.KASHitboxSize = v end, Pages[10], 192)
+AddSlider("HITBOX HEIGHT", Config.KASHitboxHeight, -20, 100, function(v) Config.KASHitboxHeight = v end, Pages[10], 232)
+AddSlider("ORBIT RADIUS", Config.KASOrbitRadius, 0, 50, function(v) Config.KASOrbitRadius = v end, Pages[10], 272)
+AddSlider("ORBIT SPEED", Config.KASOrbitSpeed, 0.5, 50, function(v) Config.KASOrbitSpeed = v end, Pages[10], 312, true)
+
+AddTitle("🚀 FIX LAG", Pages[11], 6)
+AddToggle("TẮT HIỆU ỨNG", function() return State.FixLagEffects end, function(v) State.FixLagEffects = v end, Pages[11], 30)
+AddToggle("LOW GRAPHICS", function() return State.FixLagLowGraphics end, function(v) State.FixLagLowGraphics = v end, Pages[11], 62)
+AddToggle("XÓA SƯƠNG MÙ", function() return State.FixLagLighting end, function(v) State.FixLagLighting = v end, Pages[11], 94)
+
+AddTitle("🌐 SERVER", Pages[12], 6)
+AddToggle("AUTO KILL SERVER", function() return State.AutoKillServer end, function(v) State.AutoKillServer = v end, Pages[12], 30)
+AddSlider("TỐC ĐỘ BAY", Config.AutoKillSpeed, 30, 500, function(v) Config.AutoKillSpeed = v end, Pages[12], 64)
+AddSlider("PHẠM VI", Config.AutoKillRange, 50, 2000, function(v) Config.AutoKillRange = v end, Pages[12], 104)
+
+AddTitle("⚙ CÀI ĐẶT", Pages[13], 6)
+AddToggle("GOD MODE", function() return State.GodMode end, function(v) State.GodMode = v end, Pages[13], 30)
+AddToggle("NO HUNGER", function() return State.NoHunger end, function(v) State.NoHunger = v end, Pages[13], 62)
+
+-- =====================================================================================
+-- LOGIC LOOPS
+-- =====================================================================================
+local lastResetTimer = tick()
+
+task.spawn(function()
+    while true do
+        task.wait(0.05)
+        pcall(function()
+            if State.M1Spam then
+                local t = FindNearest(Config.AttackRange)
+                if t then HitAll(t) end
+            end
+            if State.KASM1Block and CombatRemote then pcall(function() CombatRemote:FireServer("M1") end) end
+            if State.KASFastCombo and CombatRemote then
+                pcall(function()
+                    CombatRemote:FireServer("M1")
+                    CombatRemote:FireServer("M2")
+                    CombatRemote:FireServer("Kick")
+                    CombatRemote:FireServer("Block")
+                    task.wait(0.02)
+                    CombatRemote:FireServer("Block")
+                end)
+            end
+            if State.GodMode then
+                local c = LocalPlayer.Character
+                if c then
+                    local h = c:FindFirstChildOfClass("Humanoid")
+                    if h then h.MaxHealth = math.huge h.Health = math.huge end
+                end
+            end
+            if State.FixLagEffects then
+                for _, o in ipairs(workspace:GetDescendants()) do
+                    if o:IsA("ParticleEmitter") or o:IsA("Trail") or o:IsA("Smoke") or o:IsA("Fire") then o.Enabled = false end
+                end
+            end
+            if State.Spin then
+                local c = LocalPlayer.Character
+                if c then local r = c:FindFirstChild("HumanoidRootPart") if r then r.CFrame = r.CFrame * CFrame.Angles(0, math.rad(15), 0) end end
+            end
+            if State.AntiStun then
+                local c = LocalPlayer.Character
+                if c then local h = c:FindFirstChildOfClass("Humanoid") if h then h.PlatformStand = false h.Sit = false h.AutoRotate = true end end
+            end
+            if State.AutoReset then
+                if tick() - lastResetTimer >= Config.ResetTime then
+                    if CustomResetEvent then pcall(function() CustomResetEvent:FireServer() end) end
+                    lastResetTimer = tick()
+                end
+            end
+            if State.ESP then
+                for _, p in ipairs(PlayersService:GetPlayers()) do
+                    if p ~= LocalPlayer and p.Character and not p.Character:FindFirstChild("ESP_HL") then
+                        local hl = Instance.new("Highlight", p.Character)
+                        hl.Name = "ESP_HL"
+                        hl.FillColor = Color3.fromRGB(255, 255, 255)
+                        hl.OutlineColor = Color3.fromRGB(0, 0, 0)
+                        hl.FillTransparency = 0.5
+                    end
+                end
+            else
+                for _, p in ipairs(PlayersService:GetPlayers()) do
+                    if p ~= LocalPlayer and p.Character then
+                        local hl = p.Character:FindFirstChild("ESP_HL")
+                        if hl then hl:Destroy() end
+                    end
+                end
+            end
+        end)
+    end
+end)
+
+print("[KAS] Loaded v24.0 — FULL SCRIPT WITH SLIDERS AND FEATURES ✅")
